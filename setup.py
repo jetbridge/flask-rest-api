@@ -8,7 +8,7 @@ with open('README.rst', encoding='utf-8') as f:
 
 setup(
     name='flask-rest-api',
-    version='0.14.0',
+    version='0.16.1',
     description='Build a REST API with Flask',
     long_description=long_description,
     url='https://github.com/Nobatek/flask-rest-api',
@@ -41,11 +41,12 @@ setup(
     package_data={
         '': ['spec/templates/*'],
     },
+    python_requires='>=3.5',
     install_requires=[
-        'werkzeug>=0.11',
-        'flask>=1.0',
+        'werkzeug>=0.15',
+        'flask>=1.1.0',
         'marshmallow>=2.15.2',
         'webargs>=1.5.2',
-        'apispec>=1.0.0',
+        'apispec>=2.0.0',
     ],
 )

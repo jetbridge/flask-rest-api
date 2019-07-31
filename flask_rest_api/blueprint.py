@@ -37,6 +37,7 @@ Documentation process works in several steps:
 """
 
 from collections import OrderedDict
+from functools import wraps
 from copy import deepcopy
 
 from flask import Blueprint as FlaskBlueprint
@@ -76,13 +77,21 @@ class Blueprint(
         self._manual_docs = OrderedDict()
         self._endpoints = []
 
-    def route(self, rule, **options):
+    def route(self, rule, *, parameters=None, **options):
         """Decorator to register url rule in application
 
         Also stores doc info for later registration
 
         Use this to decorate a :class:`MethodView <flask.views.MethodView>` or
-        a resource function
+        a resource function.
+
+        :param str rule: URL rule as string.
+        :param str endpoint: Endpoint for the registered URL rule (defaults
+            to function name).
+        :param list parameters: List of parameters relevant to all operations
+            in this path, only used to document the resource.
+        :param dict options: Options to be forwarded to the underlying
+            :class:`werkzeug.routing.Rule <Rule>` object.
         """
         def decorator(func):
 
@@ -102,13 +111,13 @@ class Blueprint(
 
             # Add URL rule in Flask and store endpoint documentation
             self.add_url_rule(rule, endpoint, view_func, **options)
-            self._store_endpoint_docs(endpoint, func, **options)
+            self._store_endpoint_docs(endpoint, func, parameters, **options)
 
             return func
 
         return decorator
 
-    def _store_endpoint_docs(self, endpoint, obj, **kwargs):
+    def _store_endpoint_docs(self, endpoint, obj, parameters, **options):
         """Store view or function doc info"""
 
         endpoint_auto_doc = self._auto_docs.setdefault(
@@ -138,9 +147,11 @@ class Blueprint(
                     store_method_docs(method, func)
         # Function
         else:
-            methods = kwargs.pop('methods', None) or ['GET']
+            methods = options.pop('methods', None) or ['GET']
             for method in methods:
                 store_method_docs(method, obj)
+
+        endpoint_auto_doc['parameters'] = parameters
 
     def register_views_in_doc(self, app, spec):
         """Register views information in documentation
@@ -154,24 +165,26 @@ class Blueprint(
         # This method uses the documentation information associated with each
         # endpoint in self._[auto|manual]_docs to provide documentation for
         # corresponding route to the spec object.
-        for endpoint, endpoint_auto_doc in self._auto_docs.items():
+        # Deepcopy to avoid mutating the source
+        # Allows registering blueprint multiple times (e.g. when creating
+        # multiple apps during tests)
+        auto_docs = deepcopy(self._auto_docs)
+        for endpoint, endpoint_auto_doc in auto_docs.items():
+            parameters = endpoint_auto_doc.pop('parameters')
             doc = OrderedDict()
-            for key, auto_doc in endpoint_auto_doc.items():
-                # Deepcopy to avoid mutating the source
-                # Allows calling this function twice
-                endpoint_doc = deepcopy(auto_doc)
+            for method_l, endpoint_doc in endpoint_auto_doc.items():
                 # Format operations documentation in OpenAPI structure
                 self._prepare_doc(endpoint_doc, spec.openapi_version)
                 # Tag all operations with Blueprint name
                 endpoint_doc['tags'] = [self.name]
                 # Merge auto_doc and manual_doc into doc
-                manual_doc = self._manual_docs[endpoint][key]
-                doc[key] = deepupdate(endpoint_doc, manual_doc)
+                manual_doc = self._manual_docs[endpoint][method_l]
+                doc[method_l] = deepupdate(endpoint_doc, manual_doc)
 
             # Thanks to self.route, there can only be one rule per endpoint
             full_endpoint = '.'.join((self.name, endpoint))
             rule = next(app.url_map.iter_rules(full_endpoint))
-            spec.path(rule=rule, operations=doc)
+            spec.path(rule=rule, operations=doc, parameters=parameters)
 
     @staticmethod
     def _prepare_doc(operation, openapi_version):
@@ -184,41 +197,44 @@ class Blueprint(
         versions: the OpenAPI version is not known when the decorators are
         applied but only at registration time when this method is called.
         """
-        if openapi_version.major >= 3:
+        if openapi_version.major < 3:
             if 'responses' in operation:
                 for resp in operation['responses'].values():
-                    if 'schema' in resp:
-                        resp['content'] = {
-                            'application/json': {
-                                'schema': resp.pop('schema')}}
+                    if 'example' in resp:
+                        resp['examples'] = {
+                            'application/json': resp.pop('example')}
+        else:
+            if 'responses' in operation:
+                for resp in operation['responses'].values():
+                    for field in ('schema', 'example', 'examples'):
+                        if field in resp:
+                            (
+                                resp
+                                .setdefault('content', {})
+                                .setdefault('application/json', {})
+                                [field]
+                            ) = resp.pop(field)
             if 'parameters' in operation:
                 for param in operation['parameters']:
-                    if param['in'] == 'body':
+                    if param['in'] == 'json':
                         request_body = {
-                            **{
-                                'content': {
-                                    'application/json': {
-                                        'schema': param['schema']
-                                    }
-                                }
-                            },
-                            **{
-                                x: param[x]
-                                for x in ('description', 'required')
-                                if x in param
-                            }
+                            x: param[x] for x in ('description', 'required')
+                            if x in param
                         }
+                        for field in ('schema', 'example', 'examples'):
+                            if field in param:
+                                (
+                                    request_body
+                                    .setdefault('content', {})
+                                    .setdefault('application/json', {})
+                                    [field]
+                                ) = param.pop(field)
                         operation['requestBody'] = request_body
                         # There can be only one requestBody
-                        continue
-                parameters = [
-                    param for param in operation['parameters']
-                    if not param['in'] == 'body'
-                ]
-                if parameters:
-                    operation['parameters'] = parameters
-                else:
-                    del operation['parameters']
+                        operation['parameters'].remove(param)
+                        if not operation['parameters']:
+                            del operation['parameters']
+                        break
 
     @staticmethod
     def doc(**kwargs):
@@ -235,9 +251,16 @@ class Blueprint(
                     ...
         """
         def decorator(func):
+
+            @wraps(func)
+            def wrapper(*f_args, **f_kwargs):
+                return func(*f_args, **f_kwargs)
+
             # Don't merge manual doc with auto-documentation right now.
             # Store it in a separate attribute to merge it later.
-            func._api_manual_doc = deepupdate(
-                getattr(func, '_api_manual_doc', {}), kwargs)
-            return func
+            # The deepcopy avoids modifying the wrapped function doc
+            wrapper._api_manual_doc = deepupdate(
+                deepcopy(getattr(wrapper, '_api_manual_doc', {})), kwargs)
+            return wrapper
+
         return decorator

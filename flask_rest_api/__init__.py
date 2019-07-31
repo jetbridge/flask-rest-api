@@ -7,7 +7,7 @@ from .blueprint import Blueprint  # noqa
 from .pagination import Page  # noqa
 from .error_handler import ErrorHandlerMixin
 
-__version__ = '0.14.0'
+__version__ = '0.16.1'
 
 
 class Api(APISpecMixin, ErrorHandlerMixin):
@@ -41,7 +41,6 @@ class Api(APISpecMixin, ErrorHandlerMixin):
         self._app = app
         self.spec = None
         # Use lists to enforce order
-        self._schemas = []
         self._fields = []
         self._converters = []
         if app is not None:

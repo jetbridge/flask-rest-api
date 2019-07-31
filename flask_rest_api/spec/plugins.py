@@ -3,6 +3,7 @@
 Heavily copied from apispec
 """
 
+from collections.abc import Mapping
 import re
 
 import werkzeug.routing
@@ -58,7 +59,7 @@ class FlaskPlugin(BasePlugin):
     def rule_to_params(self, rule):
         """Get parameters from flask Rule"""
         params = []
-        for argument in rule.arguments:
+        for argument in [a for a in rule.arguments if a not in rule.defaults]:
             param = {
                 'in': 'path',
                 'name': argument,
@@ -76,24 +77,28 @@ class FlaskPlugin(BasePlugin):
             params.append(param)
         return params
 
-    def path_helper(self, rule, operations, **kwargs):
+    def path_helper(self, rule, operations, parameters, **kwargs):
         """Get path from flask Rule and set path parameters in operations"""
 
         for path_p in self.rule_to_params(rule):
-            for operation in operations.values():
-                parameters = operation.setdefault('parameters', [])
-                # If a parameter with same name and location is already
-                # documented, update. Otherwise, append as new parameter.
-                p_doc = next(
-                    (p for p in parameters
-                     if p['in'] == 'path' and p['name'] == path_p['name']),
-                    None
-                )
-                if p_doc is not None:
-                    # If parameter already documented, mutate to update doc
-                    # Ensure manual doc overwrites auto doc
-                    p_doc.update({**path_p, **p_doc})
-                else:
-                    parameters.append(path_p)
+            # If a parameter with same name and location is already
+            # documented, update. Otherwise, append as new parameter.
+            p_doc = next(
+                (
+                    p for p in parameters
+                    if (
+                        isinstance(p, Mapping) and
+                        p['in'] == 'path' and
+                        p['name'] == path_p['name']
+                    )
+                ),
+                None
+            )
+            if p_doc is not None:
+                # If parameter already documented, mutate to update doc
+                # Ensure manual doc overwrites auto doc
+                p_doc.update({**path_p, **p_doc})
+            else:
+                parameters.append(path_p)
 
         return self.flaskpath2openapi(rule.rule)

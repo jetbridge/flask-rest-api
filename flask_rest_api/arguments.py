@@ -1,11 +1,10 @@
 """Arguments parsing"""
+from copy import deepcopy
+from functools import wraps
 import re
 
 from webargs import core
 from webargs.flaskparser import FlaskParser
-from apispec.ext.marshmallow.openapi import __location_map__
-
-from .exceptions import InvalidLocationError
 
 
 class ArgumentsMixin:
@@ -13,7 +12,10 @@ class ArgumentsMixin:
 
     ARGUMENTS_PARSER = FlaskParser()
 
-    def arguments(self, schema, *, location='json', required=True, **kwargs):
+    def arguments(
+            self, schema, *, location='json', required=True,
+            example=None, examples=None, **kwargs
+    ):
         """Decorator specifying the schema used to deserialize parameters
 
         :param type|Schema schema: Marshmallow ``Schema`` class or instance
@@ -24,38 +26,44 @@ class ArgumentsMixin:
             expose the whole schema as a `required` parameter.
             For other locations, the schema is turned into an array of
             parameters and their required value is inferred from the schema.
+        :param dict example: Parameter example.
+        :param list examples: List of parameter examples.
         :param dict kwargs: Keyword arguments passed to the webargs
             :meth:`use_args <webargs.core.Parser.use_args>` decorator used
             internally.
 
+        The `example` and `examples` parameters are mutually exclusive and
+        should only be used with OpenAPI 3 and when location is `json`.
+
         See :doc:`Arguments <arguments>`.
         """
-        # TODO: This shouldn't be needed. I think I did this because apispec
-        # worked better with instances, but this should have been solved since.
-        if isinstance(schema, type):
-            schema = schema()
-
-        try:
-            openapi_location = __location_map__[location]
-        except KeyError:
-            raise InvalidLocationError(
-                "{} is not a valid location".format(location))
-
         # At this stage, put schema instance in doc dictionary. Il will be
         # replaced later on by $ref or json.
         parameters = {
-            'in': openapi_location,
+            'in': location,
             'required': required,
             'schema': schema,
         }
+        if example is not None:
+            parameters['example'] = example
+        if examples is not None:
+            parameters['examples'] = examples
 
         def decorator(func):
+
+            @wraps(func)
+            def wrapper(*f_args, **f_kwargs):
+                return func(*f_args, **f_kwargs)
+
             # Add parameter to parameters list in doc info in function object
-            func._apidoc = getattr(func, '_apidoc', {})
-            func._apidoc.setdefault('parameters', []).append(parameters)
+            # The deepcopy avoids modifying the wrapped function doc
+            wrapper._apidoc = deepcopy(getattr(wrapper, '_apidoc', {}))
+            wrapper._apidoc.setdefault('parameters', []).append(parameters)
+
             # Call use_args (from webargs) to inject params in function
             return self.ARGUMENTS_PARSER.use_args(
-                schema, locations=[location], **kwargs)(func)
+                schema, locations=[location], **kwargs)(wrapper)
+
         return decorator
 
 

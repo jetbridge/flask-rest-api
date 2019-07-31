@@ -5,12 +5,9 @@ OpenAPI
 =======
 
 `flask-rest-api` automatically generates an OpenAPI documentation (formerly
-known as Swagger) for the API. It does so by inspecting
-the :class:`Schema <marshmallow.Schema>` used to deserialiaze the parameters
-and deserialize the responses. A few manual steps are required to complete the
-generated documentation.
+known as Swagger) for the API.
 
-The documentation can be made accessible as a JSON file, along with a nice web
+That documentation can be made accessible as a JSON file, along with a nice web
 interface such as ReDoc_ or `Swagger UI`_.
 
 Specify Versions
@@ -34,8 +31,11 @@ specified as Flask application parameters:
    The OpenAPI version must be passed either as application parameter or at
    :class:`Api <Api>` initialization in ``spec_kwargs`` parameters.
 
-Add Documentation Information to the View Functions
----------------------------------------------------
+Add Documentation Information to Resources
+------------------------------------------
+
+Add Summary and Description
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 `flask-rest-api` uses view functions docstrings to fill the `summary` and
 `description` attributes of an `operation object`.
@@ -67,28 +67,49 @@ The example above produces the following documentation attributes:
         }
     }
 
-Any description attribute for a view function can be passed to the docs with
-the :meth:`Blueprint.doc <Blueprint.doc>` decorator. The following example
-illustrates how to pass `summary` and `description` using that decorator.
+Document Operations Parameters and Responses
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. code-block:: python
+Schemas passed in :meth:`Blueprint.arguments <Blueprint.arguments>` to
+deserialize arguments are parsed automatically to generate corresponding
+documentation. Additional ``example`` and ``examples`` parameters can be used
+to provide examples (those are only valid for OpenAPI v3).
 
-    @blp.doc(description='Return pets based on ID',
-             summary='Find pets by ID')
-    def get(...):
-        """This method is used to find pets by ID"""
-        ...
+Likewise, schemas passed in :meth:`Blueprint.response <Blueprint.response>` to
+serialize responses are parsed automatically to generate corresponding
+documentation. Additional ``example`` and ``examples`` parameters can be used
+to provide examples (``examples`` is only valid for OpenAPI v3). Additional
+``headers`` parameters can be used to document response headers.
 
-`summary` and `description` passed using the
-:meth:`Blueprint.doc <Blueprint.doc>` decorator override the ones from the
-docstring.
+Document Path Parameters
+^^^^^^^^^^^^^^^^^^^^^^^^
 
-`flask-rest-api` aims at providing all useful attributes automatically, so
-this decorator should not need to be used for general use cases. However, it
-comes in handy if an OpenAPI feature is not supported.
+Path parameters are automatically documented. The type in the documentation
+is inferred from the path parameter converter used in the URL rule. Custom path
+parameters should be registered for their type to be correctly determined (see
+below).
 
-Populating the root document object
------------------------------------
+The :meth:`Blueprint.route <Blueprint.route>` method takes a ``parameters``
+argument to pass documentation for parameters that are shared by all operations
+of a path. It can be used to pass extra documentation, such as examples, for
+path parameters.
+
+Pass Extra Documentation Information
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+`flask-rest-api` tries to document the API as automatically as possible and to
+provide explicit means to pass extra-information that can't be inferred from
+the code, such as descriptions, examples, etc.
+
+The :meth:`Blueprint.doc <Blueprint.doc>` decorator provides a means to pass
+extra documentation information. It comes in handy if an OpenAPI feature is not
+supported, but it suffers from a few limitations, and it should be considered
+a last resort solution until `flask-rest-api` is improved to fit the need.
+
+Known issues and alternatives are discussed in issue :issue:`71`.
+
+Populate the Root Document Object
+---------------------------------
 
 Additional root document attributes can be passed either in the code, in
 :class:`Api <Api>` parameter ``spec_kwargs``, or as Flask app configuration
@@ -113,22 +134,20 @@ Note that ``app.config`` overrides ``spec_kwargs``. The example above produces
    flask parameter `APPLICATION_ROOT`. In OpenAPI v3, `basePath` is removed,
    and the `servers` attribute can only be set by the user.
 
-Register Definitions
---------------------
+Document Top-level Components
+-----------------------------
 
-When a schema is used multiple times throughout the spec, it is better to
-add it to the spec's schema components so as to reference it rather than
-duplicate its content.
-
-To register a schema, use the :meth:`Api.schema` decorator:
+Documentation components can be passed by accessing the internal apispec
+:class:`Components <apispec.core.Components>` object.
 
 .. code-block:: python
 
-    api = Api()
-
-    @api.schema('Pet')
-    class Pet(Schema):
-        ...
+    api = Api(app)
+    api.spec.components.parameter(
+      'Pet name',
+      'query',
+      {'description': 'Item ID', 'format': 'int32', 'required': True}
+   )
 
 Register Custom Fields
 ----------------------
@@ -213,7 +232,7 @@ number.
 .. describe:: OPENAPI_REDOC_VERSION
 
    ReDoc version as string. Should be an existing version number, ``latest``
-   (latest 1.x verison) or ``next`` (latest 2.x version).
+   (latest 1.x version) or ``next`` (latest 2.x version).
 
    This is used to build the CDN URL if ``OPENAPI_REDOC_URL`` is ``None``.
 

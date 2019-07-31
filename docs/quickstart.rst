@@ -22,7 +22,7 @@ A view function only has one successful response type and status code. All other
 possible responses are errors.
 
 
-Simple example
+Simple Example
 --------------
 
 Here is a basic "Petstore example", where The ``Pet`` class is an imaginary ORM.
@@ -47,7 +47,6 @@ Define a marshmallow :class:`Schema <marshmallow.Schema>` to expose the model.
 
 .. code-block:: python
 
-    @api.schema('Pet')
     class PetSchema(ma.Schema):
 
         class Meta:

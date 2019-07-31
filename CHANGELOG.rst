@@ -1,14 +1,107 @@
 Changelog
 ---------
 
-0.14.1 (unreleased)
+0.17.0 (unreleased)
++++++++++++++++++++
+
+Features:
+
+- *Backwards-incompatible*: Only return status code and short name in error
+  handler (:pr:`84`).
+- *Backwards-incompatible*: Remove logging from error handler. Logging can be
+  achieved in application code by overriding ``handle_http_exception``.
+  Remove ``_prepare_error_response_content``. Reponse payload is computed in
+  ``handle_http_exception``. (:pr:`85`)
+- *Backwards-incompatible*: Remove ``InvalidLocationError``. The mapping from
+  webargs locations to OAS locations is done in apispec and no exception is
+  raised if an invalid location is passed. (:pr:`81`)
+
+0.16.1 (2019-07-15)
++++++++++++++++++++
+
+Bug fixes:
+
+- Fix detection of unhandled exceptions in error handler for Flask=>1.1.0
+  (:pr:`82`).
+
+Other changes:
+
+- Bump minimum Flask version to 1.1.0. From this version on, uncaught
+  exceptions are passed to the error handler as ``InternalServerError`` with
+  the exception attached as ``original_exception`` attribute. (:pr:`82`)
+
+0.16.0 (2019-06-20)
++++++++++++++++++++
+
+Features:
+
+- Add ``parameters`` argument to ``Blueprint.route`` to pass documentation for
+  parameters that are shared by all operations of a path (:pr:`78`).
+
+Other changes:
+
+- *Backwards-incompatible*: Bump minimum apispec version to 2.0.0.
+- *Backwards-incompatible*: Path parameters documentation passed in
+  ``Blueprint.doc`` is no longer merged with automatic documentation. It should
+  be passed in ``Blueprint.route`` instead.
+- *Backwards-incompatible*: Remove ``Api.schema`` and ``Api.definition``.
+  Those methods are useless since ``Schema`` components are automatically
+  registered by apispec. Manual component registration is still possible using
+  the internal apispec ``Components`` object. (:pr:`75`)
+
+0.15.1 (2019-06-18)
++++++++++++++++++++
+
+Bug fixes:
+
+- marshmallow 3.0.0rc7 compatibility (:pr:`77`).
+
+0.15.0 (2019-05-09)
++++++++++++++++++++
+
+Features:
+
+- Add parameters to pass examples and headers in ``Blueprint.response``
+  decorator (:pr:`63`).
+- Add parameters to pass examples for ``requestBody`` in OpenAPI v3 in
+  ``Blueprint.arguments`` decorator (:pr:`68`).
+- Support status codes expressed as ``HTTPStatus`` in ``Blueprint.response``
+  decorator (:issue:`60`).
+  Thanks :user:`Regzand` for reporting.
+
+Other changes:
+
+- Bump minimum apispec version to 1.3.2.
+- Bump minimum werkzeug version to 0.15. With 0.14.x versions, `412` responses
+  are returned with no content.
+- *Backwards-incompatible*: When using ``Blueprint.doc`` decorator to provide
+  additional documentation to the response described in the
+  ``Blueprint.response`` decorator, the user must use the same format (``str``,
+  ``int`` or ``HTTPStatus``) to express the status code in both decorators.
+  This is a side-effect of (:issue:`60`). Now that headers and examples can
+  be described in ``Blueprint.response``, this should not be a common use case.
+
+0.14.1 (2019-04-18)
 +++++++++++++++++++
 
 Features:
 
 - Official Python 3.7 support (:pr:`45`).
 - Rename ``Api.definition`` as ``Api.schema``. Keep ``Api.definition`` as an
-  alias to ``Api.schema`` for backward compatibility.
+  alias to ``Api.schema`` for backward compatibility (:pr:`53`).
+
+Bug fixes:
+
+- Fix passing route with path parameter default value (:pr:`58`).
+  Thanks :user:`zedrdave` for reporting.
+- When no descrition is provided to ``Blueprint.response``, don't add an empty
+  string as description in the docs.
+- Fix returning a ``tuple`` subclass from a view function. Only raw ``tuple``
+  instances are considered as Flask's (return value, status, headers).
+  ``tuple`` subclasses are treated as ``list`` and can be paginated/dumped.
+  Raw ``tuple`` return values should be cast to another type (e.g. ``list``)
+  to be distinguished from (return value, status, headers) tuple. (:issue:`52`)
+  Thanks :user:`asyncee` for reporting.
 
 0.14.0 (2019-03-08)
 +++++++++++++++++++
@@ -57,7 +150,7 @@ Features:
 
 - *Backwards-incompatible*: ``Api.register_converter`` doesn't register
   converter in Flask app anymore. It should be registered manually using
-  `app.url_map.converters['converter_name'] = Converter`.
+  ``app.url_map.converters['converter_name'] = Converter``.
 - ``Api.definition``, ``Api.register_field`` and ``Api.register_converter`` can
   be called before app initialization. The information is buffered and passed
   to the internal ``APISpec`` object when it is created, in ``Api.init_app``.
@@ -305,7 +398,7 @@ Bug fixes:
 
 Features:
 
-- App leading and trailing ``/`` to OPENAPI_URL_PREFIX if missing.
+- Add leading and trailing ``/`` to OPENAPI_URL_PREFIX if missing.
 - *Backwards-incompatible*: Change default URL path for OpenAPI JSON to ``'openapi.json'``.
 
 Bug fixes:

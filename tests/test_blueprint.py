@@ -1,6 +1,7 @@
 """Test Blueprint extra features"""
 
 import json
+import http
 import pytest
 
 import marshmallow as ma
@@ -9,7 +10,8 @@ from flask import jsonify
 from flask.views import MethodView
 
 from flask_rest_api import Api, Blueprint, Page
-from flask_rest_api.exceptions import InvalidLocationError
+
+from .utils import build_ref
 
 
 LOCATIONS_MAPPING = (
@@ -59,10 +61,27 @@ class TestBlueprint():
             assert 'parameters' not in get
             assert 'requestBody' in get
 
-    def test_blueprint_arguments_location_invalid(self, app, schemas):
+    @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
+    def test_blueprint_multiple_registrations(self, app, openapi_version):
+        """Check blueprint can be registered multiple times
+
+        The internal doc structure is modified during the reigistration
+        process. If it is not deepcopied, the second registration fails.
+        """
+        app.config['OPENAPI_VERSION'] = openapi_version
         blp = Blueprint('test', __name__, url_prefix='/test')
-        with pytest.raises(InvalidLocationError):
-            blp.arguments(schemas.DocSchema, location='invalid')
+
+        @blp.route('/')
+        def func():
+            pass
+
+        api = Api(app)
+        api.register_blueprint(blp)
+        spec_1 = api.spec.to_dict()
+        api = Api(app)
+        api.register_blueprint(blp)
+        spec_2 = api.spec.to_dict()
+        assert spec_1 == spec_2
 
     @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
     @pytest.mark.parametrize('location_map', LOCATIONS_MAPPING)
@@ -162,35 +181,100 @@ class TestBlueprint():
             'query_args': {'arg1': 'test'},
         }
 
-    @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
-    def test_blueprint_path_parameters(self, app, openapi_version):
-        """Check auto and manual param docs are merged"""
+    # This is only relevant to OAS3.
+    @pytest.mark.parametrize('openapi_version', ('3.0.2', ))
+    def test_blueprint_arguments_examples(self, app, schemas, openapi_version):
         app.config['OPENAPI_VERSION'] = openapi_version
         api = Api(app)
         blp = Blueprint('test', __name__, url_prefix='/test')
 
-        @blp.route('/<int:item_id>')
-        @blp.doc(parameters=[
-            {'name': 'item_id', 'in': 'path', 'description': 'Item ID'}
+        example = {'field': 12}
+        examples = {'example 1': {'field': 12}, 'example 2': {'field': 42}}
+
+        @blp.route('/example')
+        @blp.arguments(schemas.DocSchema, example=example)
+        def func_example():
+            """Dummy view func"""
+
+        @blp.route('/examples')
+        @blp.arguments(schemas.DocSchema, examples=examples)
+        def func_examples():
+            """Dummy view func"""
+
+        api.register_blueprint(blp)
+        spec = api.spec.to_dict()
+        get = spec['paths']['/test/example']['get']
+        assert (
+            get['requestBody']['content']['application/json']['example'] ==
+            example
+        )
+        get = spec['paths']['/test/examples']['get']
+        assert (
+            get['requestBody']['content']['application/json']['examples'] ==
+            examples
+        )
+
+    @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
+    def test_blueprint_route_parameters(self, app, openapi_version):
+        """Check path parameters docs are merged with auto docs"""
+        app.config['OPENAPI_VERSION'] = openapi_version
+        api = Api(app)
+        blp = Blueprint('test', __name__, url_prefix='/test')
+
+        @blp.route('/<int:item_id>', parameters=[
+            'TestParameter',
+            {'name': 'item_id', 'in': 'path', 'description': 'Item ID'},
         ])
         def get(item_id):
             pass
 
         api.register_blueprint(blp)
         spec = api.spec.to_dict()
-        params = spec['paths']['/test/{item_id}']['get']['parameters']
-        assert len(params) == 1
+        params = spec['paths']['/test/{item_id}']['parameters']
+        assert len(params) == 2
         if openapi_version == '2.0':
-            assert params == [{
-                'name': 'item_id', 'in': 'path', 'required': True,
-                'description': 'Item ID',
-                'format': 'int32', 'type': 'integer'}]
+            assert params == [
+                build_ref(api.spec, 'parameter', 'TestParameter'),
+                {
+                    'name': 'item_id', 'in': 'path', 'required': True,
+                    'description': 'Item ID',
+                    'format': 'int32', 'type': 'integer'
+                },
+            ]
         else:
-            assert params == [{
-                'name': 'item_id', 'in': 'path', 'required': True,
-                'description': 'Item ID',
-                'schema': {'format': 'int32', 'type': 'integer'}
-            }]
+            assert params == [
+                build_ref(api.spec, 'parameter', 'TestParameter'),
+                {
+                    'name': 'item_id', 'in': 'path', 'required': True,
+                    'description': 'Item ID',
+                    'schema': {'format': 'int32', 'type': 'integer'}
+                },
+            ]
+
+    @pytest.mark.parametrize('as_method_view', (True, False))
+    def test_blueprint_route_path_parameter_default(self, app, as_method_view):
+        api = Api(app)
+        blp = Blueprint('test', __name__, url_prefix='/test')
+
+        if as_method_view:
+            @blp.route('/<int:user_id>')
+            @blp.route('/', defaults={'user_id': 1})
+            class Resource(MethodView):
+
+                def get(self, user_id):
+                    pass
+
+        else:
+            @blp.route('/<int:user_id>')
+            @blp.route('/', defaults={'user_id': 1})
+            def func(user_id):
+                pass
+
+        api.register_blueprint(blp)
+        paths = api.spec.to_dict()['paths']
+
+        assert 'parameters' not in paths['/test/']
+        assert paths['/test/{user_id}']['parameters'][0]['name'] == 'user_id'
 
     @pytest.mark.parametrize('openapi_version', ['2.0', '3.0.2'])
     def test_blueprint_response_schema(self, app, openapi_version, schemas):
@@ -203,8 +287,6 @@ class TestBlueprint():
         app.config['OPENAPI_VERSION'] = openapi_version
         api = Api(app)
         blp = Blueprint('test', 'test', url_prefix='/test')
-
-        api.schema('Doc')(schemas.DocSchema)
 
         @blp.route('/schema_many_false')
         @blp.response(schemas.DocSchema(many=False))
@@ -220,23 +302,108 @@ class TestBlueprint():
 
         paths = api.spec.to_dict()['paths']
 
+        schema_ref = build_ref(api.spec, 'schema', 'Doc')
+
         response = paths['/test/schema_many_false']['get']['responses']['200']
         if openapi_version == '2.0':
-            schema = response['schema']
-            assert schema == {'$ref': '#/definitions/Doc'}
+            assert response['schema'] == schema_ref
         else:
-            schema = (
-                response['content']['application/json']['schema'])
-            assert schema == {'$ref': '#/components/schemas/Doc'}
+            assert (
+                response['content']['application/json']['schema'] ==
+                schema_ref
+            )
 
         response = paths['/test/schema_many_true']['get']['responses']['200']
         if openapi_version == '2.0':
-            schema = response['schema']['items']
-            assert schema == {'$ref': '#/definitions/Doc'}
+            assert response['schema']['items'] == schema_ref
         else:
-            schema = (
-                response['content']['application/json']['schema']['items'])
-            assert schema == {'$ref': '#/components/schemas/Doc'}
+            assert (
+                response['content']['application/json']['schema']['items'] ==
+                schema_ref
+            )
+
+    def test_blueprint_response_description(self, app):
+        api = Api(app)
+        blp = Blueprint('test', 'test', url_prefix='/test')
+
+        @blp.route('/route_1')
+        @blp.response()
+        def func_1():
+            pass
+
+        @blp.route('/route_2')
+        @blp.response(description='Test')
+        def func_2():
+            pass
+
+        api.register_blueprint(blp)
+
+        get_1 = api.spec.to_dict()['paths']['/test/route_1']['get']
+        assert 'description' not in get_1['responses']['200']
+        get_2 = api.spec.to_dict()['paths']['/test/route_2']['get']
+        assert get_2['responses']['200']['description'] == 'Test'
+
+    @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
+    def test_blueprint_response_example(self, app, openapi_version):
+        app.config['OPENAPI_VERSION'] = openapi_version
+        api = Api(app)
+        blp = Blueprint('test', 'test', url_prefix='/test')
+
+        example = {'name': 'One'}
+
+        @blp.route('/')
+        @blp.response(example=example)
+        def func():
+            pass
+
+        api.register_blueprint(blp)
+
+        get = api.spec.to_dict()['paths']['/test/']['get']
+        if openapi_version == '2.0':
+            assert get['responses']['200']['examples'][
+                'application/json'] == example
+        else:
+            assert get['responses']['200']['content'][
+                'application/json']['example'] == example
+
+    # This is only relevant to OAS3.
+    @pytest.mark.parametrize('openapi_version', ('3.0.2', ))
+    def test_blueprint_response_examples(self, app, openapi_version):
+        app.config['OPENAPI_VERSION'] = openapi_version
+        api = Api(app)
+        blp = Blueprint('test', 'test', url_prefix='/test')
+
+        examples = {
+            'example 1': {'summary': 'Example 1', 'value': {'name': 'One'}},
+            'example 2': {'summary': 'Example 2', 'value': {'name': 'Two'}},
+        }
+
+        @blp.route('/')
+        @blp.response(examples=examples)
+        def func():
+            pass
+
+        api.register_blueprint(blp)
+
+        get = api.spec.to_dict()['paths']['/test/']['get']
+        assert get['responses']['200']['content']['application/json'][
+            'examples'] == examples
+
+    def test_blueprint_response_headers(self, app):
+        api = Api(app)
+        blp = Blueprint('test', 'test', url_prefix='/test')
+
+        headers = {'X-Header': {'description': 'Custom header'}}
+
+        @blp.route('/')
+        @blp.response(headers=headers)
+        def func():
+            pass
+
+        api.register_blueprint(blp)
+
+        get = api.spec.to_dict()['paths']['/test/']['get']
+        assert get['responses']['200']['headers'] == headers
 
     @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
     def test_blueprint_pagination(self, app, schemas, openapi_version):
@@ -291,11 +458,12 @@ class TestBlueprint():
     def test_blueprint_doc_function(self, app):
         api = Api(app)
         blp = Blueprint('test', __name__, url_prefix='/test')
+        client = app.test_client()
 
         @blp.route('/', methods=('PUT', 'PATCH', ))
         @blp.doc(summary='Dummy func', description='Do dummy stuff')
         def view_func():
-            pass
+            return jsonify({'Value': 'OK'})
 
         api.register_blueprint(blp)
         spec = api.spec.to_dict()
@@ -303,6 +471,10 @@ class TestBlueprint():
         for method in ('put', 'patch', ):
             assert path[method]['summary'] == 'Dummy func'
             assert path[method]['description'] == 'Do dummy stuff'
+
+        response = client.put('/test/')
+        assert response.status_code == 200
+        assert response.json == {'Value': 'OK'}
 
     def test_blueprint_doc_method_view(self, app):
         api = Api(app)
@@ -348,6 +520,7 @@ class TestBlueprint():
         api = Api(app)
         blp = Blueprint('test', __name__, url_prefix='/test')
 
+        # This is a dummy example. In real-life, use 'example' parameter.
         doc_example = {
             'content': {'application/json': {'example': {'test': 123}}}}
 
@@ -358,7 +531,7 @@ class TestBlueprint():
         class Resource(MethodView):
 
             @blp.doc(**{'requestBody': doc_example})
-            @blp.doc(**{'responses': {'200': doc_example}})
+            @blp.doc(**{'responses': {200: doc_example}})
             @blp.arguments(ItemSchema)
             @blp.response(ItemSchema)
             def get(self):
@@ -369,8 +542,39 @@ class TestBlueprint():
         get = spec['paths']['/test/']['get']
         assert get['requestBody']['content']['application/json'][
             'example'] == {'test': 123}
-        assert get['responses']['200']['content']['application/json'][
-            'example'] == {'test': 123}
+        resp = get['responses']['200']
+        assert resp['content']['application/json']['example'] == {'test': 123}
+        assert 'schema' in resp['content']['application/json']
+
+    @pytest.mark.parametrize('status_code', (200, '200', http.HTTPStatus.OK))
+    def test_blueprint_response_status_code_cast_to_string(
+            self, app, status_code):
+        api = Api(app)
+        blp = Blueprint('test', __name__, url_prefix='/test')
+
+        # This is a dummy example. In real-life, use 'description' parameter.
+        doc_desc = {'description': 'Description'}
+
+        class ItemSchema(ma.Schema):
+            test = ma.fields.Int()
+
+        @blp.route('/')
+        class Resource(MethodView):
+
+            # When documenting a response, @blp.doc MUST use the same type
+            # to express the status code as the one used in @blp.response.
+            # (Default is 200 expressed as int.)
+            @blp.doc(**{'responses': {status_code: doc_desc}})
+            @blp.arguments(ItemSchema)
+            @blp.response(ItemSchema, code=status_code)
+            def get(self):
+                pass
+
+        api.register_blueprint(blp)
+        spec = api.spec.to_dict()
+        resp = spec['paths']['/test/']['get']['responses']['200']
+        assert resp['description'] == 'Description'
+        assert 'schema' in resp['content']['application/json']
 
     def test_blueprint_doc_info_from_docstring(self, app):
         api = Api(app)
@@ -450,11 +654,8 @@ class TestBlueprint():
         methods = list(api.spec.to_dict()['paths']['/test/'].keys())
         assert methods == [m.lower() for m in http_methods]
 
-    @pytest.mark.parametrize('openapi_version', ('2.0', '3.0.2'))
     @pytest.mark.parametrize('as_method_view', (True, False))
-    def test_blueprint_multiple_routes_per_view(
-            self, app, as_method_view, openapi_version):
-        app.config['OPENAPI_VERSION'] = openapi_version
+    def test_blueprint_multiple_routes_per_view(self, app, as_method_view):
         api = Api(app)
         blp = Blueprint('test', __name__, url_prefix='/test')
 
@@ -521,6 +722,13 @@ class TestBlueprint():
         def func_response_wrong_tuple():
             return {}, 201, {'X-header': 'test'}, 'extra'
 
+        @blp.route('/response_tuple_subclass')
+        @blp.response()
+        def func_response_tuple_subclass():
+            class MyTuple(tuple):
+                pass
+            return MyTuple((1, 2))
+
         api.register_blueprint(blp)
 
         response = client.get('/test/response')
@@ -550,6 +758,9 @@ class TestBlueprint():
         assert response.headers['X-header'] == 'test'
         response = client.get('/test/response_wrong_tuple')
         assert response.status_code == 500
+        response = client.get('/test/response_tuple_subclass')
+        assert response.status_code == 200
+        assert response.json == [1, 2]
 
     def test_blueprint_pagination_response_tuple(self, app):
         api = Api(app)
@@ -586,6 +797,14 @@ class TestBlueprint():
         def func_response_wrong_tuple():
             return [1, 2], 201, {'X-header': 'test'}, 'extra'
 
+        @blp.route('/response_tuple_subclass')
+        @blp.response()
+        @blp.paginate(Page)
+        def func_response_tuple_subclass():
+            class MyTuple(tuple):
+                pass
+            return MyTuple((1, 2))
+
         api.register_blueprint(blp)
 
         response = client.get('/test/response')
@@ -604,6 +823,9 @@ class TestBlueprint():
         assert response.headers['X-header'] == 'test'
         response = client.get('/test/response_wrong_tuple')
         assert response.status_code == 500
+        response = client.get('/test/response_tuple_subclass')
+        assert response.status_code == 200
+        assert response.json == [1, 2]
 
     def test_blueprint_response_response_object(self, app, schemas):
         api = Api(app)

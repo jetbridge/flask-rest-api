@@ -1,8 +1,9 @@
 """Response processor"""
 
+from copy import deepcopy
 from functools import wraps
 
-from werkzeug import BaseResponse
+from werkzeug.wrappers import BaseResponse
 from flask import jsonify
 
 from .utils import (
@@ -15,14 +16,20 @@ from .compat import MARSHMALLOW_VERSION_MAJOR
 class ResponseMixin:
     """Extend Blueprint to add response handling"""
 
-    def response(self, schema=None, *, code=200, description=''):
+    def response(
+            self, schema=None, *, code=200, description=None,
+            example=None, examples=None, headers=None
+    ):
         """Decorator generating an endpoint response
 
         :param schema: :class:`Schema <marshmallow.Schema>` class or instance.
             If not None, will be used to serialize response data.
-        :param int code: HTTP status code (default: 200). Used if none is
-            returned from the view function.
-        :param str descripton: Description of the response.
+        :param int|str|HTTPStatus code: HTTP status code (default: 200).
+            Used if none is returned from the view function.
+        :param str description: Description of the response (default: None).
+        :param dict example: Example of response message.
+        :param list examples: Examples of response message.
+        :param dict headers: Headers returned by the response.
 
         The decorated function is expected to return the same types of value
         than a typical flask view function, except the body part may be an
@@ -32,19 +39,33 @@ class ResponseMixin:
         If the decorated function returns a ``Response`` object, the ``schema``
         and ``code`` parameters are only used to document the resource.
 
+        The `example` and `examples` parameters are mutually exclusive. The
+        latter should only be used with OpenAPI 3.
+
+        The `example`, `examples` and `headers` parameters are only used to
+        document the resource.
+
         See :doc:`Response <response>`.
         """
         if isinstance(schema, type):
             schema = schema()
 
-        def decorator(func):
+        # Document response (schema, description,...) in the API doc
+        resp_doc = {}
+        doc_schema = self._make_doc_response_schema(schema)
+        if doc_schema is not None:
+            resp_doc['schema'] = doc_schema
+        if description is not None:
+            resp_doc['description'] = description
+        if example is not None:
+            resp_doc['example'] = example
+        if examples is not None:
+            resp_doc['examples'] = examples
+        if headers is not None:
+            resp_doc['headers'] = headers
+        doc = {'responses': {code: resp_doc}}
 
-            # Add schema as response in the API doc
-            doc = {'responses': {str(code): {'description': description}}}
-            doc_schema = self._make_doc_response_schema(schema)
-            if doc_schema:
-                doc['responses'][str(code)]['schema'] = doc_schema
-            func._apidoc = deepupdate(getattr(func, '_apidoc', {}), doc)
+        def decorator(func):
 
             @wraps(func)
             def wrapper(*args, **kwargs):
@@ -65,7 +86,7 @@ class ResponseMixin:
                 else:
                     result_dump = schema.dump(result_raw)
                     if MARSHMALLOW_VERSION_MAJOR < 3:
-                        result_dump = result_dump[0]
+                        result_dump = result_dump.data
 
                 # Store result in appcontext (may be used for ETag computation)
                 appcontext = get_appcontext()
@@ -79,6 +100,11 @@ class ResponseMixin:
                     resp.status_code = code
 
                 return resp
+
+            # Store doc in wrapper function
+            # The deepcopy avoids modifying the wrapped function doc
+            wrapper._apidoc = deepupdate(
+                deepcopy(getattr(wrapper, '_apidoc', {})), doc)
 
             return wrapper
 
